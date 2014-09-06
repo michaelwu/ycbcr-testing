@@ -36,13 +36,13 @@ convert_yuv_word_lines(__m128i yline,
 		       char **outrgba)
 {
 	__m128i round = _mm_shuffle_epi32(*(__m128i *)&SSE2const, 0xAA);
-	__m128i alphaline = _mm_shuffle_epi32(*(__m128i *)&SSE2masks, 0xFF);
 
 	// Convert blue
 	__m128i bucoef = _mm_shuffle_epi32(*(__m128i *)&SSE2colorcoef, 0xFF);
 	__m128i buline = _mm_mullo_epi16(uline, bucoef);
-	__m128i blueline = _mm_adds_epi16(buline, yline);
-	blueline = _mm_adds_epi16(buline, blueline);
+	buline = _mm_adds_epi16(buline, buline);
+	__m128i blueline = _mm_adds_epi16(yline, buline);
+	blueline = _mm_adds_epi16(blueline, round);
 	blueline = _mm_max_epi16(blueline, round);
 	blueline = _mm_slli_epi16(blueline, 1);
 	blueline = _mm_srli_epi16(blueline, 8);
@@ -57,22 +57,20 @@ convert_yuv_word_lines(__m128i yline,
 	__m128i greenline = _mm_adds_epi16(guvline, yline);
 	greenline = _mm_adds_epi16(round, greenline);
 	greenline = _mm_max_epi16(greenline, round);
-	greenline = _mm_slli_epi16(greenline, 1);
-	greenline = _mm_and_si128(greenline, alphaline);
+	greenline = _mm_srli_epi16(greenline, 7);
+	greenline = _mm_slli_epi16(greenline, 8);
+
+	__m128i bluegreenline = _mm_or_si128(blueline, greenline);
 
 	// Convert red
 	__m128i rvcoef = _mm_shuffle_epi32(*(__m128i *)&SSE2colorcoef, 0x00);
 	__m128i rvline = _mm_mullo_epi16(vline, rvcoef);
-	__m128i vbits = _mm_srai_epi16(vline, 2);
-	__m128i redline = _mm_adds_epi16(rvline, yline);
-	redline = _mm_adds_epi16(vbits, redline);
+	__m128i redline = _mm_adds_epi16(yline, rvline);
 	redline = _mm_adds_epi16(round, redline);
 	redline = _mm_max_epi16(redline, round);
 	redline = _mm_srli_epi16(redline, 7);
 
-
-	__m128i bluegreenline = _mm_or_si128(blueline, greenline);
-
+	__m128i alphaline = _mm_shuffle_epi32(*(__m128i *)&SSE2masks, 0xFF);
 	__m128i redalphaline = _mm_or_si128(redline, alphaline);
 	__m128i rgbalinelow = _mm_unpacklo_epi16(bluegreenline, redalphaline);
 	__m128i rgbalinehigh = _mm_unpackhi_epi16(bluegreenline, redalphaline);
@@ -133,26 +131,35 @@ convert_to_rgba_sse2(
 	__m128i *vrow = (__m128i *)vplane;
 	char *outrow = outrgba;
 
-	for (uint32_t j = 0; j < height; j++) {
+	for (uint32_t j = 0; j < height; j += 2) {
 		uint32_t i = 0;
 		__m128i *y = yrow;
+		__m128i *y_odd = (__m128i *)(((char *)yrow) + ystride);
 		__m128i *u = urow;
 		__m128i *v = vrow;
 		char *out = outrow;
+		char *out_odd = outrow + width * 4;
 		while (i < width) {
 			/* Use saturation arithmetic to clamp y values */
 			__m128i full_yline = _mm_adds_epu8(*y++, whiteclip);
 			full_yline = _mm_subs_epu8(full_yline, blackclip);
 
 			/* Convert high half */
-			__m128i full_uline = _mm_unpackhi_epi8(*u, *u);
-			__m128i full_vline = _mm_unpackhi_epi8(*v, *v);
+			__m128i full_uline = _mm_unpacklo_epi8(*u, *u);
+			__m128i full_vline = _mm_unpacklo_epi8(*v, *v);
 
 			convert_yuv_byte_lines(full_yline,
 					       full_uline,
 					       full_vline,
 					       &out);
 
+			__m128i full_yline_odd = _mm_adds_epu8(*y_odd++, whiteclip);
+			full_yline_odd = _mm_subs_epu8(full_yline_odd, blackclip);
+
+			convert_yuv_byte_lines(full_yline_odd,
+					       full_uline,
+					       full_vline,
+					       &out_odd);
 			i += sizeof(__m128i);
 			if (i >= width)
 				break;
@@ -160,24 +167,29 @@ convert_to_rgba_sse2(
 			/* Convert lower half */
 			full_yline = _mm_adds_epu8(*y++, whiteclip);
 			full_yline = _mm_subs_epu8(full_yline, blackclip);
-			full_uline = _mm_unpacklo_epi8(*u, *u);
-			full_vline = _mm_unpacklo_epi8(*v, *v);
+			full_uline = _mm_unpackhi_epi8(*u, *u);
+			full_vline = _mm_unpackhi_epi8(*v, *v);
 
 			convert_yuv_byte_lines(full_yline,
 					       full_uline,
 					       full_vline,
 					       &out);
 
+			full_yline_odd = _mm_adds_epu8(*y_odd++, whiteclip);
+			full_yline_odd = _mm_subs_epu8(full_yline_odd, blackclip);
+
+			convert_yuv_byte_lines(full_yline_odd,
+					       full_uline,
+					       full_vline,
+					       &out_odd);
 			i += sizeof(__m128i);
 			u++;
 			v++;
 		}
-		yrow = (__m128i *)(((char *)yrow) + ystride);
-		if (j % 2) {
-			urow = (__m128i *)(((char *)urow) + uvstride);
-			vrow = (__m128i *)(((char *)vrow) + uvstride);
-		}
-		outrow += width * 4;
+		yrow = (__m128i *)(((char *)yrow) + (ystride * 2));
+		urow = (__m128i *)(((char *)urow) + uvstride);
+		vrow = (__m128i *)(((char *)vrow) + uvstride);
+		outrow += width * 4 * 2;
 	}
 }
 
@@ -254,7 +266,7 @@ void convert_to_rgba_sse2_lookuptable(
 		FastConvertYUVToRGB32Row(yrow, urow, vrow, (uint8_t*)outrgba, width);
 		outrgba += width * 4;
 		yrow += ystride;
-		if (!(row % 2)) {
+		if (row % 2) {
 			urow += uvstride;
 			vrow += uvstride;
 		}
@@ -363,10 +375,18 @@ error_check(
 	uint32_t *refrgba, uint32_t *fastrgba,
 	uint32_t width, uint32_t height)
 {
-	uint32_t buckets[256];
-	memset(buckets, 0, sizeof(buckets));
+	uint32_t bucketsR[256];
+	uint32_t bucketsG[256];
+	uint32_t bucketsB[256];
+	memset(bucketsR, 0, sizeof(bucketsR));
+	memset(bucketsG, 0, sizeof(bucketsG));
+	memset(bucketsB, 0, sizeof(bucketsB));
 
 	for (uint32_t i = 0; i < width * height; i++) {
+		int32_t row = (i / width) % 16;
+		if (row == 0 || row == 15)
+			continue;
+
 		int32_t refR = (refrgba[i] >> 16) & 0xFF;
 		int32_t fastR = (fastrgba[i] >> 16) & 0xFF;
 		int32_t refG = (refrgba[i] >> 8) & 0xFF;
@@ -374,19 +394,28 @@ error_check(
 		int32_t refB = refrgba[i] & 0xFF;
 		int32_t fastB = fastrgba[i] & 0xFF;
 
-		int error = abs(fastR - refR) +
-			    abs(fastG - refG) +
-			    abs(fastB - refB);
-
-		error = std::min(error, 255);
-		buckets[error]++;
+		bucketsR[std::min(abs(fastR - refR), 255)]++;
+		bucketsG[std::min(abs(fastG - refG), 255)]++;
+		bucketsB[std::min(abs(fastB - refB), 255)]++;
 	}
 
-	printf("Error distribution:\n");
+	printf("Error distribution R:\n");
 	for (uint32_t i = 0; i < 256; i++) {
-		if (!buckets[i])
+		if (!bucketsR[i])
 			continue;
-		printf("%3d: %d\n", i, buckets[i]);
+		printf("%3d: %d\n", i, bucketsR[i]);
+	}
+	printf("Error distribution G:\n");
+	for (uint32_t i = 0; i < 256; i++) {
+		if (!bucketsG[i])
+			continue;
+		printf("%3d: %d\n", i, bucketsG[i]);
+	}
+	printf("Error distribution B:\n");
+	for (uint32_t i = 0; i < 256; i++) {
+		if (!bucketsB[i])
+			continue;
+		printf("%3d: %d\n", i, bucketsB[i]);
 	}
 }
 
@@ -420,7 +449,9 @@ int main()
 	uint32_t *refrgba = (uint32_t *)malloc(4096 * 4096 * 4);
 	uint32_t *fastrgba = (uint32_t *)malloc(4096 * 4096 * 4);
 
-#if 0
+#define BENCHMARK 0
+
+#if !BENCHMARK
 	convert_to_rgba_reference(yplane, uplane, vplane,
 				  4096, 2048,
 				  4096, 4096,
@@ -433,7 +464,7 @@ int main()
 			     (char*)fastrgba);
 #endif
 
-#if 1
+#if BENCHMARK
 	for (int n = 0; n < 100; n++) {
 #if 1
 	convert_to_rgba_sse2(yplane, uplane, vplane,
@@ -449,7 +480,7 @@ int main()
 	}
 #endif
 
-#if 0
+#if !BENCHMARK
 	write_to_png(refrgba, 4096 * 4, 4096, 4096, "refrgba.png");
 	write_to_png(fastrgba, 4096 * 4, 4096, 4096, "fastrgba.png");
 	error_check(refrgba, fastrgba, 4096, 4096);
