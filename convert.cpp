@@ -11,45 +11,71 @@
 
 #include "yuv_row_table.cpp"
 
-static const uint8_t SSE2masks[16] =
-	{ 36, 36, 36, 36,
-	  20, 20, 20, 20,
-	  0, 0, 0, 0,
-	  0, 0xFF, 0, 0xFF };
+// TODO:
+// Flexible constant/coefficient selection
+// Flexible downsample configuration
+// UV line deinterlacing support
+// Unaligned output widths
+// Unaligned output addresses
+// Scaling?
 
-static const int16_t SSE2colorcoef[8] =
-	{  204,  204,
-	  -50,  -50,
-	  -104,  -104,
-	   129,  129 };
+// Try to keep the struct here within a 64 byte cacheline
+struct SSE2YUVConsts {
+	uint8_t byteconsts[16];
+	int16_t wordconsts[8];
+	int16_t colorcoef[8];
+};
 
-static const uint8_t SSE2const[16] =
-	{ 149, 0, 149, 0,
-	  128, 0, 128, 0,
-	  64, 0, 64, 0,
-	  0, 0, 0, 0 };
+/*
+ * Used to define 
+ */
+#define YUVCONSTS(name, low, high, rvcoef, gucoef, gvcoef, bucoef) \
+	static const SSE2YUVConsts name __attribute__ ((aligned (64))) = { \
+		{ low + high, low + high, low + high, low + high, \
+		  high, high, high, high, \
+		  0, 0, 0, 0, \
+		  0, 0xFF, 0, 0xFF }, \
+		{ (0xFF << 7) / (0xFF - (low + high)), \
+		  (0xFF << 7) / (0xFF - (low + high)), \
+		  1 << 7, 1 << 7, \
+		  1 << 6, 1 << 6, \
+		  0, 0 },\
+		{ (rvcoef * (1 << 7)) + 0.5f, (rvcoef * (1 << 7)) + 0.5f, \
+		  (gucoef * (1 << 7)) - 0.5f, (gucoef * (1 << 7)) - 0.5f, \
+		  (gvcoef * (1 << 7)) - 0.5f, (gvcoef * (1 << 7)) - 0.5f, \
+		  ((bucoef - 1.0f) * (1 << 7)) + 0.5f, \
+		  ((bucoef - 1.0f) * (1 << 7)) + 0.5f }, \
+	}
+
+YUVCONSTS(sBT601Consts, 16, 20, \
+	  1.5960267857142858, \
+	 -0.3917622900949137, \
+	 -0.8129676472377708, \
+	  2.017232142857143);
 
 static inline void
 convert_yuv_word_lines(__m128i yline,
 		       __m128i uline,
 		       __m128i vline,
+		       const SSE2YUVConsts &consts,
 		       char **outrgba)
 {
-	__m128i round = _mm_shuffle_epi32(*(__m128i *)&SSE2const, 0xAA);
+	__m128i round = _mm_shuffle_epi32(*(__m128i *)consts.wordconsts, 0xAA);
 
 	// Convert blue
-	__m128i bucoef = _mm_shuffle_epi32(*(__m128i *)&SSE2colorcoef, 0xFF);
+	__m128i bucoef = _mm_shuffle_epi32(*(__m128i *)consts.colorcoef, 0xFF);
 	__m128i buline = _mm_mullo_epi16(uline, bucoef);
-	buline = _mm_adds_epi16(buline, buline);
 	__m128i blueline = _mm_adds_epi16(yline, buline);
+	buline = _mm_slli_epi16(uline, 7);
 	blueline = _mm_adds_epi16(blueline, round);
+	blueline = _mm_adds_epi16(blueline, buline);
 	blueline = _mm_max_epi16(blueline, round);
 	blueline = _mm_slli_epi16(blueline, 1);
 	blueline = _mm_srli_epi16(blueline, 8);
 
 	// Convert green
-	__m128i gucoef = _mm_shuffle_epi32(*(__m128i *)&SSE2colorcoef, 0x55);
-	__m128i gvcoef = _mm_shuffle_epi32(*(__m128i *)&SSE2colorcoef, 0xAA);
+	__m128i gucoef = _mm_shuffle_epi32(*(__m128i *)consts.colorcoef, 0x55);
+	__m128i gvcoef = _mm_shuffle_epi32(*(__m128i *)consts.colorcoef, 0xAA);
 	__m128i guline = _mm_mullo_epi16(uline, gucoef);
 	__m128i gvline = _mm_mullo_epi16(vline, gvcoef);
 	__m128i guvline = _mm_adds_epi16(guline, gvline);
@@ -63,14 +89,14 @@ convert_yuv_word_lines(__m128i yline,
 	__m128i bluegreenline = _mm_or_si128(blueline, greenline);
 
 	// Convert red
-	__m128i rvcoef = _mm_shuffle_epi32(*(__m128i *)&SSE2colorcoef, 0x00);
+	__m128i rvcoef = _mm_shuffle_epi32(*(__m128i *)consts.colorcoef, 0x00);
 	__m128i rvline = _mm_mullo_epi16(vline, rvcoef);
 	__m128i redline = _mm_adds_epi16(yline, rvline);
 	redline = _mm_adds_epi16(round, redline);
 	redline = _mm_max_epi16(redline, round);
 	redline = _mm_srli_epi16(redline, 7);
 
-	__m128i alphaline = _mm_shuffle_epi32(*(__m128i *)&SSE2masks, 0xFF);
+	__m128i alphaline = _mm_shuffle_epi32(*(__m128i *)consts.byteconsts, 0xFF);
 	__m128i redalphaline = _mm_or_si128(redline, alphaline);
 	__m128i rgbalinelow = _mm_unpacklo_epi16(bluegreenline, redalphaline);
 	__m128i rgbalinehigh = _mm_unpackhi_epi16(bluegreenline, redalphaline);
@@ -84,6 +110,7 @@ static inline void
 convert_yuv_byte_lines(__m128i full_yline,
 		       __m128i full_uline,
 		       __m128i full_vline,
+		       const SSE2YUVConsts &consts,
 		       char **outrgba)
 {
 	__m128i zero = _mm_setzero_si128();
@@ -91,15 +118,15 @@ convert_yuv_byte_lines(__m128i full_yline,
 	__m128i uunscaledline = _mm_unpacklo_epi8(full_uline, zero);
 	__m128i vunscaledline = _mm_unpacklo_epi8(full_vline, zero);
 
-	__m128i yscaler = _mm_shuffle_epi32(*(__m128i *)&SSE2const, 0x00);
-	__m128i uvnormalizer = _mm_shuffle_epi32(*(__m128i *)&SSE2const, 0x55);
+	__m128i yscaler = _mm_shuffle_epi32(*(__m128i *)consts.wordconsts, 0x00);
+	__m128i uvnormalizer = _mm_shuffle_epi32(*(__m128i *)consts.wordconsts, 0x55);
 	// Scale to 255 and convert to 9.7 fixed point
 	__m128i yline = _mm_mullo_epi16(yunscaledline, yscaler);
 	// Scale to -128 to 127
 	__m128i uline = _mm_sub_epi16(uunscaledline, uvnormalizer);
 	__m128i vline = _mm_sub_epi16(vunscaledline, uvnormalizer);
 
-	convert_yuv_word_lines(yline, uline, vline, outrgba);
+	convert_yuv_word_lines(yline, uline, vline, consts, outrgba);
 
 	yunscaledline = _mm_unpackhi_epi8(full_yline, zero);
 	uunscaledline = _mm_unpackhi_epi8(full_uline, zero);
@@ -111,7 +138,7 @@ convert_yuv_byte_lines(__m128i full_yline,
 	uline = _mm_sub_epi16(uunscaledline, uvnormalizer);
 	vline = _mm_sub_epi16(vunscaledline, uvnormalizer);
 
-	convert_yuv_word_lines(yline, uline, vline, outrgba);
+	convert_yuv_word_lines(yline, uline, vline, consts, outrgba);
 }
 
 void
@@ -121,10 +148,11 @@ convert_to_rgba_sse2(
 	const void *vplane,
 	uint32_t ystride, uint32_t uvstride,
 	uint32_t width, uint32_t height,
+	const SSE2YUVConsts &consts,
 	char *outrgba)
 {
-	__m128i whiteclip = _mm_shuffle_epi32(*(__m128i *)&SSE2masks, 0x55);
-	__m128i blackclip = _mm_shuffle_epi32(*(__m128i *)&SSE2masks, 0x00);
+	__m128i whiteclip = _mm_shuffle_epi32(*(__m128i *)consts.byteconsts, 0x55);
+	__m128i blackclip = _mm_shuffle_epi32(*(__m128i *)consts.byteconsts, 0x00);
 
 	__m128i *yrow = (__m128i *)yplane;
 	__m128i *urow = (__m128i *)uplane;
@@ -151,6 +179,7 @@ convert_to_rgba_sse2(
 			convert_yuv_byte_lines(full_yline,
 					       full_uline,
 					       full_vline,
+					       consts,
 					       &out);
 
 			__m128i full_yline_odd = _mm_adds_epu8(*y_odd++, whiteclip);
@@ -159,6 +188,7 @@ convert_to_rgba_sse2(
 			convert_yuv_byte_lines(full_yline_odd,
 					       full_uline,
 					       full_vline,
+					       consts,
 					       &out_odd);
 			i += sizeof(__m128i);
 			if (i >= width)
@@ -173,6 +203,7 @@ convert_to_rgba_sse2(
 			convert_yuv_byte_lines(full_yline,
 					       full_uline,
 					       full_vline,
+					       consts,
 					       &out);
 
 			full_yline_odd = _mm_adds_epu8(*y_odd++, whiteclip);
@@ -181,6 +212,7 @@ convert_to_rgba_sse2(
 			convert_yuv_byte_lines(full_yline_odd,
 					       full_uline,
 					       full_vline,
+					       consts,
 					       &out_odd);
 			i += sizeof(__m128i);
 			u++;
@@ -421,9 +453,9 @@ error_check(
 
 int main()
 {
-	uint8_t *yplane = (uint8_t *)malloc(4096 * 4096);
-	uint8_t *uplane = (uint8_t *)malloc(2048 * 2048);
-	uint8_t *vplane = (uint8_t *)malloc(2048 * 2048);
+	uint8_t *yplane = (uint8_t *)aligned_alloc(16, 4096 * 4096);
+	uint8_t *uplane = (uint8_t *)aligned_alloc(16, 2048 * 2048);
+	uint8_t *vplane = (uint8_t *)aligned_alloc(16, 2048 * 2048);
 	uint8_t *ycur, *ucur, *vcur;
 
 	uint32_t i, j;
@@ -446,10 +478,10 @@ int main()
 		}
 	}
 
-	uint32_t *refrgba = (uint32_t *)malloc(4096 * 4096 * 4);
-	uint32_t *fastrgba = (uint32_t *)malloc(4096 * 4096 * 4);
+	uint32_t *refrgba = (uint32_t *)aligned_alloc(16, 4096 * 4096 * 4);
+	uint32_t *fastrgba = (uint32_t *)aligned_alloc(16, 4096 * 4096 * 4);
 
-#define BENCHMARK 0
+#define BENCHMARK 1
 
 #if !BENCHMARK
 	convert_to_rgba_reference(yplane, uplane, vplane,
@@ -461,6 +493,7 @@ int main()
 	convert_to_rgba_sse2(yplane, uplane, vplane,
 			     4096, 2048,
 			     4096, 4096,
+			     sBT601Consts,
 			     (char*)fastrgba);
 #endif
 
@@ -470,6 +503,7 @@ int main()
 	convert_to_rgba_sse2(yplane, uplane, vplane,
 			     4096, 2048,
 			     4096, 4096,
+			     sBT601Consts,
 			     (char*)fastrgba);
 #else
 	convert_to_rgba_sse2_lookuptable(yplane, uplane, vplane,
