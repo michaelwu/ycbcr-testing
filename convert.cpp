@@ -12,7 +12,6 @@
 #include "yuv_row_table.cpp"
 
 // TODO:
-// Flexible constant/coefficient selection
 // Flexible downsample configuration
 // UV line deinterlacing support
 // Unaligned output widths
@@ -21,30 +20,56 @@
 
 // Try to keep the struct here within a 64 byte cacheline
 struct SSE2YUVConsts {
-	uint8_t byteconsts[16];
-	int16_t wordconsts[8];
-	int16_t colorcoef[8];
+	const uint8_t byteconsts[16];
+	const int16_t colorcoef[8];
+	const int16_t wordconsts[8];
 };
 
-/*
- * Used to define 
+/* This allows the specification of consts used for YUV conversion.
+ *
+ * low:    Specifies the lowest valid luminance value.
+ *         Values below this are saturated to zero.
+ *         0 <= (int)low <= 255
+ * high:   Specifies the difference between the highest valid
+ *         luminance value and 255.
+ *         Values above this are saturated to the highest valid value.
+ *         0 <= (int)high <= 255
+ * rvcoef: Red V constant.
+ *         r = scaledY + rvcoef * scaledV
+ *         0.0 <= rvcoef < 2.0
+ * gucoef: Green U constant.
+ *         g = scaledY + gucoef * scaledU + gvcoef * scaledV
+ *         -2.0 < gucoef <= 0
+ * gvcoef: Green V constant.
+ *         g = scaledY + gucoef * scaledU + gvcoef * scaledV
+ *         -2.0 < gvcoef <= 0
+ * bucoef: Blue U constant.
+ *         b = scaledY + bucoef * scaledU
+ *         1.0 <= bucoef < 3.0
+ *
+ * Specifying coefficients outside the range will cause overflow
+ * and/or rounding in the wrong direction.
  */
+
 #define YUVCONSTS(name, low, high, rvcoef, gucoef, gvcoef, bucoef) \
 	static const SSE2YUVConsts name __attribute__ ((aligned (64))) = { \
 		{ low + high, low + high, low + high, low + high, \
 		  high, high, high, high, \
 		  0, 0, 0, 0, \
 		  0, 0xFF, 0, 0xFF }, \
+		{ static_cast<int16_t>((rvcoef * (1 << 7)) + 0.5f), \
+                  static_cast<int16_t>((rvcoef * (1 << 7)) + 0.5f), \
+		  static_cast<int16_t>((gucoef * (1 << 7)) - 0.5f), \
+		  static_cast<int16_t>((gucoef * (1 << 7)) - 0.5f), \
+		  static_cast<int16_t>((gvcoef * (1 << 7)) - 0.5f), \
+		  static_cast<int16_t>((gvcoef * (1 << 7)) - 0.5f), \
+		  static_cast<int16_t>(((bucoef - 1.0f) * (1 << 7)) + 0.5f), \
+		  static_cast<int16_t>(((bucoef - 1.0f) * (1 << 7)) + 0.5f) }, \
 		{ (0xFF << 7) / (0xFF - (low + high)), \
 		  (0xFF << 7) / (0xFF - (low + high)), \
 		  1 << 7, 1 << 7, \
 		  1 << 6, 1 << 6, \
 		  0, 0 },\
-		{ (rvcoef * (1 << 7)) + 0.5f, (rvcoef * (1 << 7)) + 0.5f, \
-		  (gucoef * (1 << 7)) - 0.5f, (gucoef * (1 << 7)) - 0.5f, \
-		  (gvcoef * (1 << 7)) - 0.5f, (gvcoef * (1 << 7)) - 0.5f, \
-		  ((bucoef - 1.0f) * (1 << 7)) + 0.5f, \
-		  ((bucoef - 1.0f) * (1 << 7)) + 0.5f }, \
 	}
 
 YUVCONSTS(sBT601Consts, 16, 20, \
@@ -60,10 +85,10 @@ convert_yuv_word_lines(__m128i yline,
 		       const SSE2YUVConsts &consts,
 		       char **outrgba)
 {
-	__m128i round = _mm_shuffle_epi32(*(__m128i *)consts.wordconsts, 0xAA);
+	__m128i round = _mm_shuffle_epi32(*(const __m128i *)consts.wordconsts, 0xAA);
 
 	// Convert blue
-	__m128i bucoef = _mm_shuffle_epi32(*(__m128i *)consts.colorcoef, 0xFF);
+	__m128i bucoef = _mm_shuffle_epi32(*(const __m128i *)consts.colorcoef, 0xFF);
 	__m128i buline = _mm_mullo_epi16(uline, bucoef);
 	__m128i blueline = _mm_adds_epi16(yline, buline);
 	buline = _mm_slli_epi16(uline, 7);
@@ -74,8 +99,8 @@ convert_yuv_word_lines(__m128i yline,
 	blueline = _mm_srli_epi16(blueline, 8);
 
 	// Convert green
-	__m128i gucoef = _mm_shuffle_epi32(*(__m128i *)consts.colorcoef, 0x55);
-	__m128i gvcoef = _mm_shuffle_epi32(*(__m128i *)consts.colorcoef, 0xAA);
+	__m128i gucoef = _mm_shuffle_epi32(*(const __m128i *)consts.colorcoef, 0x55);
+	__m128i gvcoef = _mm_shuffle_epi32(*(const __m128i *)consts.colorcoef, 0xAA);
 	__m128i guline = _mm_mullo_epi16(uline, gucoef);
 	__m128i gvline = _mm_mullo_epi16(vline, gvcoef);
 	__m128i guvline = _mm_adds_epi16(guline, gvline);
@@ -89,14 +114,14 @@ convert_yuv_word_lines(__m128i yline,
 	__m128i bluegreenline = _mm_or_si128(blueline, greenline);
 
 	// Convert red
-	__m128i rvcoef = _mm_shuffle_epi32(*(__m128i *)consts.colorcoef, 0x00);
+	__m128i rvcoef = _mm_shuffle_epi32(*(const __m128i *)consts.colorcoef, 0x00);
 	__m128i rvline = _mm_mullo_epi16(vline, rvcoef);
 	__m128i redline = _mm_adds_epi16(yline, rvline);
 	redline = _mm_adds_epi16(round, redline);
 	redline = _mm_max_epi16(redline, round);
 	redline = _mm_srli_epi16(redline, 7);
 
-	__m128i alphaline = _mm_shuffle_epi32(*(__m128i *)consts.byteconsts, 0xFF);
+	__m128i alphaline = _mm_shuffle_epi32(*(const __m128i *)consts.byteconsts, 0xFF);
 	__m128i redalphaline = _mm_or_si128(redline, alphaline);
 	__m128i rgbalinelow = _mm_unpacklo_epi16(bluegreenline, redalphaline);
 	__m128i rgbalinehigh = _mm_unpackhi_epi16(bluegreenline, redalphaline);
@@ -118,8 +143,8 @@ convert_yuv_byte_lines(__m128i full_yline,
 	__m128i uunscaledline = _mm_unpacklo_epi8(full_uline, zero);
 	__m128i vunscaledline = _mm_unpacklo_epi8(full_vline, zero);
 
-	__m128i yscaler = _mm_shuffle_epi32(*(__m128i *)consts.wordconsts, 0x00);
-	__m128i uvnormalizer = _mm_shuffle_epi32(*(__m128i *)consts.wordconsts, 0x55);
+	__m128i yscaler = _mm_shuffle_epi32(*(const __m128i *)consts.wordconsts, 0x00);
+	__m128i uvnormalizer = _mm_shuffle_epi32(*(const __m128i *)consts.wordconsts, 0x55);
 	// Scale to 255 and convert to 9.7 fixed point
 	__m128i yline = _mm_mullo_epi16(yunscaledline, yscaler);
 	// Scale to -128 to 127
@@ -148,11 +173,11 @@ convert_to_rgba_sse2(
 	const void *vplane,
 	uint32_t ystride, uint32_t uvstride,
 	uint32_t width, uint32_t height,
-	const SSE2YUVConsts &consts,
+	const SSE2YUVConsts consts,
 	char *outrgba)
 {
-	__m128i whiteclip = _mm_shuffle_epi32(*(__m128i *)consts.byteconsts, 0x55);
-	__m128i blackclip = _mm_shuffle_epi32(*(__m128i *)consts.byteconsts, 0x00);
+	__m128i whiteclip = _mm_shuffle_epi32(*(const __m128i *)consts.byteconsts, 0x55);
+	__m128i blackclip = _mm_shuffle_epi32(*(const __m128i *)consts.byteconsts, 0x00);
 
 	__m128i *yrow = (__m128i *)yplane;
 	__m128i *urow = (__m128i *)uplane;
@@ -481,7 +506,7 @@ int main()
 	uint32_t *refrgba = (uint32_t *)aligned_alloc(16, 4096 * 4096 * 4);
 	uint32_t *fastrgba = (uint32_t *)aligned_alloc(16, 4096 * 4096 * 4);
 
-#define BENCHMARK 1
+#define BENCHMARK 0
 
 #if !BENCHMARK
 	convert_to_rgba_reference(yplane, uplane, vplane,
