@@ -173,7 +173,7 @@ convert_to_rgba_sse2(
 	const void *vplane,
 	uint32_t ystride, uint32_t uvstride,
 	uint32_t width, uint32_t height,
-	const SSE2YUVConsts consts,
+	const SSE2YUVConsts &consts,
 	char *outrgba)
 {
 	__m128i whiteclip = _mm_shuffle_epi32(*(const __m128i *)consts.byteconsts, 0x55);
@@ -478,10 +478,14 @@ error_check(
 
 int main()
 {
-	uint8_t *yplane = (uint8_t *)aligned_alloc(16, 4096 * 4096);
-	uint8_t *uplane = (uint8_t *)aligned_alloc(16, 2048 * 2048);
-	uint8_t *vplane = (uint8_t *)aligned_alloc(16, 2048 * 2048);
+	uint8_t *yplane;
+	uint8_t *uplane;
+	uint8_t *vplane;
 	uint8_t *ycur, *ucur, *vcur;
+
+	posix_memalign((void**)&yplane, 16, 4096 * 4096);
+	posix_memalign((void**)&uplane, 16, 2048 * 2048);
+	posix_memalign((void**)&vplane, 16, 2048 * 2048);
 
 	uint32_t i, j;
 	ycur = yplane;
@@ -503,8 +507,11 @@ int main()
 		}
 	}
 
-	uint32_t *refrgba = (uint32_t *)aligned_alloc(16, 4096 * 4096 * 4);
-	uint32_t *fastrgba = (uint32_t *)aligned_alloc(16, 4096 * 4096 * 4);
+	uint32_t *refrgba;
+	uint32_t *fastrgba;
+
+	posix_memalign((void**)&refrgba, 16, 4096 * 4096 * 4);
+	posix_memalign((void**)&fastrgba, 16, 4096 * 4096 * 4);
 
 #define BENCHMARK 0
 

@@ -1,6 +1,9 @@
 #!/bin/bash
 
-g++ -O2 -g -Wall convert.cpp `libpng16-config --cflags --ldflags` -msse2 -o convert &&
-g++ -O2 -Wall convert.cpp `libpng16-config --cflags` -msse2 -S -o convert.s &&
-g++ -O2 -g -Wall convert.cpp `libpng16-config --cflags --ldflags` -mavx -o convertavx &&
-g++ -O2 -Wall convert.cpp `libpng16-config --cflags` -mavx -S -o convertavx.s
+CXXFLAGS="-O2 `libpng15-config --cflags`"
+LDFLAGS="`libpng15-config --ldflags`"
+
+g++ -g -Wall convert.cpp $CXXFLAGS $LDFLAGS -msse2 -o convert &&
+g++ -Wall convert.cpp $CXXFLAGS -msse2 -S -o convert.s &&
+g++ -g -Wall convert.cpp $CXXFLAGS $LDFLAGS -mavx -o convertavx &&
+g++ -Wall convert.cpp $CXXFLAGS -mavx -S -o convertavx.s
