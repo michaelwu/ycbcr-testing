@@ -58,7 +58,7 @@ struct SSE2YUVConsts {
 		  0, 0, 0, 0, \
 		  0, 0xFF, 0, 0xFF }, \
 		{ static_cast<int16_t>((rvcoef * (1 << 7)) + 0.5f), \
-                  static_cast<int16_t>((rvcoef * (1 << 7)) + 0.5f), \
+		  static_cast<int16_t>((rvcoef * (1 << 7)) + 0.5f), \
 		  static_cast<int16_t>((gucoef * (1 << 7)) - 0.5f), \
 		  static_cast<int16_t>((gucoef * (1 << 7)) - 0.5f), \
 		  static_cast<int16_t>((gvcoef * (1 << 7)) - 0.5f), \
