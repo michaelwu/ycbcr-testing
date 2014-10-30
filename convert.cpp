@@ -192,6 +192,7 @@ convert_to_rgba_sse2(
 		__m128i *v = vrow;
 		char *out = outrow;
 		char *out_odd = outrow + width * 4;
+		bool convert_oddline = (j + 1) < height;
 		while (i < width) {
 			/* Use saturation arithmetic to clamp y values */
 			__m128i full_yline = _mm_adds_epu8(*y++, whiteclip);
@@ -207,14 +208,18 @@ convert_to_rgba_sse2(
 					       consts,
 					       &out);
 
-			__m128i full_yline_odd = _mm_adds_epu8(*y_odd++, whiteclip);
-			full_yline_odd = _mm_subs_epu8(full_yline_odd, blackclip);
+			__m128i full_yline_odd;
+			if (convert_oddline) {
+				full_yline_odd = _mm_adds_epu8(*y_odd++, whiteclip);
+				full_yline_odd = _mm_subs_epu8(full_yline_odd, blackclip);
 
-			convert_yuv_byte_lines(full_yline_odd,
-					       full_uline,
-					       full_vline,
-					       consts,
-					       &out_odd);
+				convert_yuv_byte_lines(full_yline_odd,
+						       full_uline,
+						       full_vline,
+						       consts,
+						       &out_odd);
+			}
+
 			i += sizeof(__m128i);
 			if (i >= width)
 				break;
@@ -231,14 +236,16 @@ convert_to_rgba_sse2(
 					       consts,
 					       &out);
 
-			full_yline_odd = _mm_adds_epu8(*y_odd++, whiteclip);
-			full_yline_odd = _mm_subs_epu8(full_yline_odd, blackclip);
+			if (convert_oddline) {
+				full_yline_odd = _mm_adds_epu8(*y_odd++, whiteclip);
+				full_yline_odd = _mm_subs_epu8(full_yline_odd, blackclip);
 
-			convert_yuv_byte_lines(full_yline_odd,
-					       full_uline,
-					       full_vline,
-					       consts,
-					       &out_odd);
+				convert_yuv_byte_lines(full_yline_odd,
+						       full_uline,
+						       full_vline,
+						       consts,
+						       &out_odd);
+			}
 			i += sizeof(__m128i);
 			u++;
 			v++;
