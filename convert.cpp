@@ -439,10 +439,14 @@ error_check(
 	memset(bucketsG, 0, sizeof(bucketsG));
 	memset(bucketsB, 0, sizeof(bucketsB));
 
+	uint32_t total = 0;
+
 	for (uint32_t i = 0; i < width * height; i++) {
 		int32_t row = (i / width) % 16;
 		if (row == 0 || row == 15)
 			continue;
+
+		total++;
 
 		int32_t refR = (refrgba[i] >> 16) & 0xFF;
 		int32_t fastR = (fastrgba[i] >> 16) & 0xFF;
@@ -460,19 +464,19 @@ error_check(
 	for (uint32_t i = 0; i < 256; i++) {
 		if (!bucketsR[i])
 			continue;
-		printf("%3d: %d\n", i, bucketsR[i]);
+		printf("%3d: %8d (%3.2lf%%)\n", i, bucketsR[i], (double)bucketsR[i]/(double)total * 100.0f);
 	}
 	printf("Error distribution G:\n");
 	for (uint32_t i = 0; i < 256; i++) {
 		if (!bucketsG[i])
 			continue;
-		printf("%3d: %d\n", i, bucketsG[i]);
+		printf("%3d: %8d (%3.2lf%%)\n", i, bucketsG[i], (double)bucketsG[i]/(double)total * 100.0f);
 	}
 	printf("Error distribution B:\n");
 	for (uint32_t i = 0; i < 256; i++) {
 		if (!bucketsB[i])
 			continue;
-		printf("%3d: %d\n", i, bucketsB[i]);
+		printf("%3d: %8d (%3.2lf%%)\n", i, bucketsB[i], (double)bucketsB[i]/(double)total * 100.0f);
 	}
 }
 
